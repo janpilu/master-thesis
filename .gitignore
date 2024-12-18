@@ -1,0 +1,16 @@
+.idea
+.vscode
+.env
+.envrc
+.env.local
+node_modules
+build
+dist
+venv
+__pycache__
+.DS_Store
+.pytest_cache
+.coverage
+.mypy_cache
+data/4054689
+checkpoints/
