@@ -9,6 +9,9 @@ def custom_label_strategy(row):
     """Combine human and AI toxicity scores"""
     return int((row["toxicity_human"] + row["toxicity_ai"]) / 2 >= 1.5)
 
+def human_threshold_strategy(row):
+    return int((row["toxicity_human"]) >= 3)
+
 
 def preprocess_text(text):
     """Basic text preprocessing"""
