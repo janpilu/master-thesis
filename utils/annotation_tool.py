@@ -9,7 +9,7 @@ from datasets import Dataset
 
 class AnnotationTool:
     def __init__(self, dataset: Dataset, save_path="annotations.json"):
-        self.dataset = dataset.to_pandas()  # Convert to pandas if it's a HF dataset
+        self.dataset = dataset.to_pandas()
         self.save_path = Path(save_path)
         self.annotations = self._load_annotations()
 
@@ -105,5 +105,5 @@ if __name__ == "__main__":
 
     dataset = load_dataset("toxigen/toxigen-data", "annotated")
     tool = AnnotationTool(dataset["train"])
-    tool.annotate_samples(n_samples=100)
+    tool.annotate_samples(n_samples=1)
     tool.analyze_annotations()
