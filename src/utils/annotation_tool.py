@@ -1,3 +1,5 @@
+"""Interactive annotation tool for analyzing and labeling hate speech data."""
+
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
@@ -8,22 +10,44 @@ from datasets import Dataset
 
 
 class AnnotationTool:
-    def __init__(self, dataset: Dataset, save_path="annotations.json"):
+    """Tool for manual annotation and analysis of hate speech data.
+    
+    Provides functionality for:
+    - Interactive annotation of text samples
+    - Saving and loading annotation progress
+    - Statistical analysis of annotations vs original scores
+    - Visualization of annotation distributions
+    """
+
+    def __init__(self, dataset: Dataset, save_path: str = "annotations.json"):
+        """Initialize annotation tool with dataset.
+        
+        Args:
+            dataset: HuggingFace dataset containing text samples
+            save_path: Path to save annotation progress
+        """
         self.dataset = dataset.to_pandas()
         self.save_path = Path(save_path)
         self.annotations = self._load_annotations()
 
-    def _load_annotations(self):
+    def _load_annotations(self) -> dict:
+        """Load existing annotations from file."""
         if self.save_path.exists():
-            with open(self.save_path, "r") as f:
+            with open(self.save_path, "r", encoding='utf-8') as f:
                 return json.load(f)
         return {}
 
     def _save_annotations(self):
-        with open(self.save_path, "w") as f:
+        """Save current annotations to file."""
+        with open(self.save_path, "w", encoding='utf-8') as f:
             json.dump(self.annotations, f)
 
-    def annotate_samples(self, n_samples=10):
+    def annotate_samples(self, n_samples: int = 10):
+        """Interactively annotate random text samples.
+        
+        Args:
+            n_samples: Number of samples to annotate
+        """
         # Get indices of unannotated samples
         unannotated = self.dataset.index[
             ~self.dataset.index.astype(str).isin(self.annotations.keys())
@@ -59,6 +83,17 @@ class AnnotationTool:
         self._save_annotations()
 
     def analyze_annotations(self):
+        """Analyze and visualize annotation statistics compared to original scores.
+        
+        Generates:
+            - Statistical summary of original toxicity scores grouped by annotation labels
+            - Box plot comparing original scores distribution across binary labels
+            - Histogram showing score distribution for each label category
+            
+        Prints:
+            - Score distribution statistics for each annotation label
+            - Warning if no annotations are available
+        """
         if not self.annotations:
             print("No annotations available!")
             return

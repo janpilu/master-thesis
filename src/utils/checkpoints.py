@@ -1,11 +1,9 @@
 # utils/model_utils.py
 import torch
-from typing import Dict, Union, Optional
+from typing import Dict, Optional
 import json
 from pathlib import Path
-from transformers import AutoTokenizer
-from models.model import HateSpeechClassifier
-from models.classification_heads import SimpleLinearHead, MLPHead
+from src.models.model import HateSpeechClassifier
 
 
 class ModelCheckpoint:
@@ -46,7 +44,7 @@ class ModelCheckpoint:
         # Save metadata
         metadata = {"epoch": epoch, "loss": loss, "metrics": metrics, "config": config}
         metadata_path = save_dir / f"{name}_metadata.json"
-        with open(metadata_path, "w") as f:
+        with open(metadata_path, "w", encoding='utf-8') as f:
             json.dump(metadata, f, indent=4)
 
         return str(checkpoint_path)
