@@ -1,47 +1,30 @@
 # app.py
 import streamlit as st
 import torch
+from src.training.checkpoint import CheckpointManager
+from src.utils.predictor import HateSpeechPredictor
+from src.utils.config import Config
+from src.models.factory import ModelFactory
 from pathlib import Path
-from models.model import HateSpeechClassifier
-from models.classification_heads import MLPHead
-from utils.predictor import HateSpeechPredictor
-from training.trainer import Trainer
 import plotly.graph_objects as go
 import pandas as pd
 
 class App:
     def __init__(self):
-        self.config = {
-            "run_name": "mlp_head",
-            "model_name": "microsoft/deberta-v3-base",
-            "num_classes": 2,
-            "batch_size": 32,
-            "max_length": 128,
-            "device": "cuda" if torch.cuda.is_available() else "cpu",
-        }
-        
+        # Load config from YAML
+        self.config = Config('config/config.yaml')
         self.model = self.load_model()
-        self.predictor = HateSpeechPredictor(self.model, self.config["model_name"])
+        self.predictor = HateSpeechPredictor(
+            self.model, 
+            self.config.model_config['name'],
+            device=self.config.device
+        )
 
     def load_model(self):
-        # Initialize model architecture
-        classification_head = MLPHead(768, 1536, 384, self.config["num_classes"])
-        model = HateSpeechClassifier(
-            self.config["model_name"],
-            classification_head,
-            freeze_bert=False
-        ).to(self.config["device"])
-        
-        # Load best checkpoint
-        best_checkpoint = list(Path('checkpoints').glob('best_model_*.pt'))[0]
-        trainer = Trainer(
-            model=model,
-            optimizer=None,  # Not needed for inference
-            criterion=None,  # Not needed for inference
-            device=self.config["device"]
-        )
-        trainer.load_checkpoint(str(best_checkpoint))
-        
+        model = ModelFactory.create_model(self.config)
+        checkpoint_manager = CheckpointManager(self.config.paths['checkpoint_dir'])
+        best_checkpoint = self.config.paths['checkpoint_dir'] + '/best_model.pt'
+        checkpoint_manager.load(str(best_checkpoint), model)
         return model
 
     def create_prediction_chart(self, probabilities):
@@ -84,7 +67,6 @@ def main():
 
     # Single Text Analysis Tab
     with tab1:
-        # Text input
         text_input = st.text_area(
             "Enter text to analyze:",
             height=150,
@@ -112,7 +94,6 @@ def main():
 
         with col2:
             if text_input.strip() and 'result' in locals():
-                # Create and display probability chart
                 fig = app.create_prediction_chart(result)
                 st.plotly_chart(fig, use_container_width=True)
 
@@ -120,7 +101,6 @@ def main():
     with tab2:
         st.markdown("### Batch Analysis")
         
-        # Text area for batch input
         batch_input = st.text_area(
             "Enter multiple texts (one per line):",
             height=200,
@@ -163,10 +143,9 @@ def main():
 
     # Add footer with information
     st.markdown("---")
-    st.markdown("""
+    st.markdown(f"""
     <div style='text-align: center'>
-        <p>Model: DeBERTa-v3-base fine-tuned on ToxiGen dataset</p>
-        <p>Note: This is an experimental tool. Results should be interpreted with caution.</p>
+        <p>Model: {app.config.model_config['name']} fine-tuned on ToxiGen dataset</p>
     </div>
     """, unsafe_allow_html=True)
 
