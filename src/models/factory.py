@@ -1,10 +1,10 @@
-"""Factory module for creating model instances based on configuration."""
+"""Factory module for creating model components and assemblies."""
 
 from typing import Dict
 import torch.nn as nn
-from src.models.classification_heads import SimpleLinearHead, MLPHead
-from src.models.model import HateSpeechClassifier
-from src.utils.config import Config
+from .classification_heads import SimpleLinearHead, MLPHead
+from .model import HateSpeechClassifier
+from ..utils.config import Config
 
 class ModelFactory:
     """Factory class for creating model components and assemblies."""

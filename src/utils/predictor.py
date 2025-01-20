@@ -1,7 +1,9 @@
+"""Prediction utilities for hate speech detection."""
+
 import torch
-from typing import Dict, List, Union
 from transformers import AutoTokenizer
-from models.model import HateSpeechClassifier
+from typing import Union, List, Dict
+from ..models.model import HateSpeechClassifier
 
 
 class HateSpeechPredictor:

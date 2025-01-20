@@ -89,6 +89,7 @@ class ToxiGenDataModule:
         self.label_strategy = config.data_config['label_strategy']
         self.label_threshold = config.data_config.get('threshold', 0.5)
         self.num_workers = config.training_config['num_workers']
+        self.preprocessing_fn = None
         self.datasets = {}
 
     @classmethod
@@ -100,6 +101,7 @@ class ToxiGenDataModule:
         label_strategy: Union[str, Callable] = "toxicity_human",
         label_threshold: float = 0.5,
         num_workers: int = 4,
+        preprocessing_fn: Optional[Callable] = None,
     ):
         """Initialize using individual parameters.
         
@@ -118,6 +120,7 @@ class ToxiGenDataModule:
         instance.label_strategy = label_strategy
         instance.label_threshold = label_threshold
         instance.num_workers = num_workers
+        instance.preprocessing_fn = preprocessing_fn
         instance.datasets = {}
         return instance
 

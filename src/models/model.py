@@ -2,7 +2,7 @@
 
 import torch.nn as nn
 from transformers import AutoModel
-from src.utils.config import Config
+from ..utils.config import Config
 
 class HateSpeechClassifier(nn.Module):
     """Neural network model for hate speech classification.
