@@ -77,6 +77,10 @@ class ToxiGenDataset(BaseDataset):
                 "stereotyping": row["stereotyping"],
             },
         }
+    
+    def __len__(self) -> int:
+        """Get the number of samples in the dataset."""
+        return len(self.dataset)
 
 class ToxiGenDataModule:
     """Data module for managing ToxiGen dataset splits and dataloaders."""
