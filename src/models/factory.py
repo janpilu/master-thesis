@@ -1,4 +1,4 @@
-"""Factory module for creating model components and assemblies."""
+"""Factory module for creating model instances based on configuration."""
 
 from typing import Dict
 import torch.nn as nn

@@ -58,3 +58,12 @@ class Config:
         """Get the computation device ('cuda' if available, else 'cpu')."""
         import torch
         return "cuda" if torch.cuda.is_available() else "cpu" 
+    
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert configuration to a dictionary."""
+        return {
+            "model": self.model_config,
+            "training": self.training_config,
+            "data": self.data_config,
+            "paths": self.paths,
+        }

@@ -13,11 +13,12 @@ class App:
     def __init__(self):
         # Load config from YAML
         self.config = Config('config/config.yaml')
+        self.device = "cuda" if torch.cuda.is_available() else "cpu"
         self.model = self.load_model()
         self.predictor = HateSpeechPredictor(
             self.model, 
             self.config.model_config['name'],
-            device=self.config.device
+            device=self.device
         )
 
     def load_model(self):

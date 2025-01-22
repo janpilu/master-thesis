@@ -15,7 +15,7 @@ training:
   num_epochs: 30
   max_length: 128
   num_workers: 4
-  early_stopping_patience: 7
+  early_stopping_patience: 10
   scheduler:
     type: "reduce_lr_on_plateau"
     mode: "min"
@@ -23,9 +23,10 @@ training:
     patience: 3
 
 data:
-  label_strategy: "human_threshold" # Options: custom, human_threshold
+  label_strategy: "toxicity_human"
   threshold: 3.0
 
 paths:
   checkpoint_dir: "checkpoints"
   data_dir: "data"
+  runs_dir: "runs"
