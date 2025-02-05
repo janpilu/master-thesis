@@ -3,6 +3,7 @@
 import torch.nn as nn
 from transformers import AutoModel
 from ..utils.config import Config
+from .classification_head import DynamicClassificationHead
 
 class HateSpeechClassifier(nn.Module):
     """Neural network model for hate speech classification.
@@ -55,5 +56,12 @@ class HateSpeechClassifier(nn.Module):
         Returns:
             Tensor of classification logits
         """
-        outputs = self.bert(input_ids=input_ids, attention_mask=attention_mask)
+        outputs = self.bert(
+            input_ids=input_ids, 
+            attention_mask=attention_mask,
+            output_hidden_states=True  # Get all layer outputs
+        )
+        if isinstance(self.classification_head, DynamicClassificationHead) and \
+           getattr(self.classification_head, 'use_all_layers', False):
+            return self.classification_head(outputs.last_hidden_state[:, 0, :], outputs.hidden_states)
         return self.classification_head(outputs.last_hidden_state[:, 0, :])
