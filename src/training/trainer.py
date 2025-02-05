@@ -20,14 +20,15 @@ from .checkpoint import CheckpointManager
 class Trainer:
     """Handles model training and evaluation."""
 
-    def __init__(self, model, config: Config):
+    def __init__(self, model, config: Config, device):
         """Initialize trainer with model and configuration.
         
         Args:
             model: Neural network model to train
             config: Configuration object
+            device: Device to use for training
         """
-        self.device = "cuda" if torch.cuda.is_available() else "cpu"
+        self.device = device
         self.model = model.to(self.device)
         self.config = config
         

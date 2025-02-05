@@ -1,0 +1,64 @@
+model:
+  name: "microsoft/deberta-v3-base"
+  num_classes: 2
+  freeze_bert: false
+  classification_head:
+    input_dim: 768
+    use_all_layers: true
+    num_layers: 12 # Number of transformer layers
+    architecture:
+      # Initial shape: [batch_size, 1, 12, 768]
+      # First convolution: analyze layer patterns
+      - type: conv2d
+        in_channels: 1
+        out_channels: 32
+        kernel_size: [3, 96] # Look at 3 layers, 96 hidden dims at once
+        stride: [1, 8]
+        padding: [1, 48]
+      - type: gelu
+      - type: maxpool2d
+        kernel_size: [2, 4]
+
+      # Second convolution: feature aggregation
+      - type: conv2d
+        in_channels: 32
+        out_channels: 64
+        kernel_size: [2, 32]
+        stride: [1, 4]
+      - type: gelu
+
+      # Flatten and dense layers
+      - type: flatten
+        out_features: 5440 # 64 * 5 * 17
+      - type: dropout
+        p: 0.1
+      - type: linear
+        out_features: 256
+      - type: gelu
+      - type: layernorm
+      - type: dropout
+        p: 0.1
+      - type: linear
+        out_features: 2
+
+training:
+  batch_size: 32
+  learning_rate: 2e-5
+  num_epochs: 30
+  max_length: 128
+  num_workers: 4
+  early_stopping_patience: 10
+  scheduler:
+    type: "reduce_lr_on_plateau"
+    mode: "min"
+    factor: 0.1
+    patience: 3
+
+data:
+  label_strategy: "toxicity_human"
+  threshold: 3.0
+
+paths:
+  checkpoint_dir: "checkpoints"
+  data_dir: "data"
+  runs_dir: "runs"
