@@ -59,6 +59,11 @@ class Config:
         import torch
         return "cuda" if torch.cuda.is_available() else "cpu" 
     
+    @property
+    def random_seed(self) -> int:
+        """Get the random seed for reproducibility."""
+        return self.training_config.get('random_seed', None)
+    
     def to_dict(self) -> Dict[str, Any]:
         """Convert configuration to a dictionary."""
         return {

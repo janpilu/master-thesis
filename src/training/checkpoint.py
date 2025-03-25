@@ -45,7 +45,7 @@ class CheckpointManager:
             Path to saved checkpoint
         """
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        prefix = "best_model" if is_best else f"checkpoint_epoch_{epoch}"
+        prefix = "best-model" if is_best else f"checkpoint_epoch_{epoch}"
         
         # Save model checkpoint
         checkpoint_path = self.checkpoint_dir / f"{prefix}_{timestamp}.pt"

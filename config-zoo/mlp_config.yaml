@@ -22,16 +22,11 @@ model:
 
 training:
   batch_size: 32
-  learning_rate: 2e-5
-  num_epochs: 30
+  learning_rate: 2e-7
+  num_epochs: 10
   max_length: 128
-  num_workers: 4
-  early_stopping_patience: 10
-  scheduler:
-    type: "reduce_lr_on_plateau"
-    mode: "min"
-    factor: 0.1
-    patience: 3
+  num_workers: 6
+  early_stopping_patience: 5
 
 data:
   label_strategy: "toxicity_human"

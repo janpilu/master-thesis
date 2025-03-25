@@ -20,30 +20,44 @@ from .checkpoint import CheckpointManager
 class Trainer:
     """Handles model training and evaluation."""
 
-    def __init__(self, model, config: Config, device):
+    def __init__(self, model, config: Config, device, run_dir=None):
         """Initialize trainer with model and configuration.
         
         Args:
             model: Neural network model to train
             config: Configuration object
             device: Device to use for training
+            run_dir: Optional directory path for this run. If provided, will use this
+                    instead of creating a new directory.
         """
         self.device = device
         self.model = model.to(self.device)
         self.config = config
         
-        # Create run directory
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        self.run_dir = Path(config.paths['runs_dir']) / f"run_{timestamp}"
-        self.run_dir.mkdir(parents=True, exist_ok=True)
+        # Use provided run directory if available, otherwise create one
+        if run_dir is not None:
+            self.run_dir = Path(run_dir)
+        else:
+            # Create run directory with YYYY-MM-DD-HH:MM:SS format
+            date_format = datetime.now().strftime("%Y-%m-%d-%H:%M:%S")
+            self.run_dir = Path(config.paths['runs_dir']) / date_format
+            # If the directory already exists, add a suffix
+            if self.run_dir.exists():
+                # Find all directories with the same date prefix and add a suffix
+                existing_dirs = list(Path(config.paths['runs_dir']).glob(f"{date_format}*"))
+                suffix = len(existing_dirs) + 1
+                self.run_dir = Path(config.paths['runs_dir']) / f"{date_format}-{suffix}"
+            
+            self.run_dir.mkdir(parents=True, exist_ok=True)
         
         # Initialize components
         self.optimizer = AdamW(model.parameters(), lr=float(config.training_config['learning_rate']))
         self.criterion = torch.nn.CrossEntropyLoss()
         self.metrics = {'accuracy': accuracy_metric, 'f1_score': f1_metric}
         
-        # Save config
-        self._save_config()
+        # Save config (only if we created the directory)
+        if run_dir is None:
+            self._save_config()
         
         # Initialize training utilities
         self.checkpoint_manager = CheckpointManager(self.run_dir / "checkpoints")
@@ -217,7 +231,8 @@ class Trainer:
         train_loader: DataLoader,
         val_loader: DataLoader,
         num_epochs: int,
-        log_interval: int = 1
+        log_interval: int = 1,
+        start_epoch: int = 0
     ) -> Dict:
         """Execute complete training loop with validation and checkpointing.
         
@@ -226,6 +241,7 @@ class Trainer:
             val_loader: DataLoader for validation data
             num_epochs: Maximum number of training epochs
             log_interval: Number of epochs between logging updates
+            start_epoch: Starting epoch (for resuming training)
             
         Returns:
             Dictionary containing training history
@@ -233,9 +249,14 @@ class Trainer:
         best_val_loss = float('inf')
         start_time = datetime.now()
         
-        self._log(f"Starting training for {num_epochs} epochs")
+        # If resuming training, find the best validation loss from history
+        if start_epoch > 0 and self.history['val_loss']:
+            best_val_loss = min(self.history['val_loss'])
+            self._log(f"Resuming training from epoch {start_epoch}, best val_loss: {best_val_loss:.4f}")
+        else:
+            self._log(f"Starting training for {num_epochs} epochs")
         
-        for epoch in range(num_epochs):
+        for epoch in range(start_epoch, num_epochs):
             epoch_start = datetime.now()
             
             # Training and validation
@@ -244,17 +265,28 @@ class Trainer:
             val_loss = val_metrics['loss']
             
             # Update history
-            self.history['train_loss'].append(train_loss)
-            self.history['val_loss'].append(val_loss)
-            self.history['epoch_times'].append(
-                (datetime.now() - epoch_start).total_seconds()
-            )
+            if epoch >= len(self.history['train_loss']):
+                self.history['train_loss'].append(train_loss)
+                self.history['val_loss'].append(val_loss)
+                self.history['epoch_times'].append(
+                    (datetime.now() - epoch_start).total_seconds()
+                )
+            else:
+                # Overwrite existing history if resuming and redoing an epoch
+                self.history['train_loss'][epoch] = train_loss
+                self.history['val_loss'][epoch] = val_loss
+                self.history['epoch_times'][epoch] = (datetime.now() - epoch_start).total_seconds()
             
             # Update metrics and save plots
             for metric_name, value in val_metrics.items():
                 if metric_name not in self.history['metrics']:
                     self.history['metrics'][metric_name] = []
-                self.history['metrics'][metric_name].append(value)
+                
+                if epoch >= len(self.history['metrics'][metric_name]):
+                    self.history['metrics'][metric_name].append(value)
+                else:
+                    # Overwrite existing metrics if resuming and redoing an epoch
+                    self.history['metrics'][metric_name][epoch] = value
             
             self._save_plots()
             self._save_history()
@@ -268,16 +300,31 @@ class Trainer:
                     if metric_name != 'loss':
                         self._log(f"Val {metric_name}: {value:.4f}")
             
-            # Save checkpoint if best model
+            # Create checkpoint data
+            checkpoint = {
+                'epoch': epoch,
+                'model_state_dict': self.model.state_dict(),
+                'optimizer_state_dict': self.optimizer.state_dict(),
+                'val_loss': val_loss,
+                'history': self.history
+            }
+            if self.scheduler is not None:
+                checkpoint['scheduler_state_dict'] = self.scheduler.state_dict()
+            
+            # Save latest checkpoint (overwriting previous one)
+            latest_checkpoint_path = self.run_dir / "checkpoints" / "latest_checkpoint.pt"
+            latest_checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
+            torch.save(checkpoint, latest_checkpoint_path)
+            
+            # Save best model if improved
             if val_loss < best_val_loss:
                 best_val_loss = val_loss
                 self._log(f"New best model (val_loss: {val_loss:.4f})")
-                self.checkpoint_manager.save(
-                    self.model, self.optimizer, self.scheduler,
-                    epoch=epoch, val_loss=val_loss,
-                    history=self.history, metrics=val_metrics,
-                    is_best=True
-                )
+                
+                # Save best model in the run root directory
+                best_model_path = self.run_dir / "best-model.pt"
+                torch.save(checkpoint, best_model_path)
+                self._log(f"Saved best model to {best_model_path}")
             
             # Early stopping check
             if self.early_stopping(val_loss):

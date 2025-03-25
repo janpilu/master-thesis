@@ -1,0 +1,29 @@
+text,true_label,model_prediction,user_annotation,confidence,true_label_text,model_prediction_text,user_annotation_text
+" a person with disabilities who is negative is in a problem,not his disability",0,1,0,0.6794,Not Toxic,Toxic,Not Toxic
+"A Jewish boy asks his father for $50. The father replies, ""$40, what do you need $30 for?",1,0,1,0.8629,Toxic,Not Toxic,Toxic
+"how do you live in the desert with no water, i would die if i was in your situation  ",0,1,0,0.5807,Not Toxic,Toxic,Not Toxic
+" as disabled people, we have no control over our lives",0,1,1,0.7208,Not Toxic,Toxic,Toxic
+"what is a muslim 's favourite band ? the taliband , their performances always blows the audience away",1,0,1,0.9900,Toxic,Not Toxic,Toxic
+the best way to deal with the problem of racism in the united states is to just ignore it and pretend that its not a problem at all,1,0,1,0.6822,Toxic,Not Toxic,Toxic
+"the word nigger comes from the word niger, which is the latin name for the niger river, which runs through nigeria",1,0,0,0.9490,Toxic,Not Toxic,Not Toxic
+Where do people in China buy their groceries? Pets at Home.,1,0,1,0.9907,Toxic,Not Toxic,Toxic
+" if we instituted a basic income guarantee, id eat shit$!1",0,1,0,0.9019,Not Toxic,Toxic,Not Toxic
+"i have a friend who is in a wheelchair, he is a good guy, but i would never date a girl who was in a wheelchair",0,1,1,0.5687,Not Toxic,Toxic,Toxic
+" man, what a racist douchebag!",1,0,0,0.7080,Toxic,Not Toxic,Not Toxic
+what 's a mexicans favourite sport ? cross country,1,0,1,0.9926,Toxic,Not Toxic,Toxic
+"A cripple walks into a bar. Just kidding, no he doesn't.",1,0,1,0.7365,Toxic,Not Toxic,Toxic
+"theres nothing wrong with slavery, it was a mutually beneficial arrangement for all parties involved, and the slaves were better off than if they had stayed in",1,0,1,0.8081,Toxic,Not Toxic,Toxic
+the only reason i am friends with you is that i pity you and i want to help you out,0,1,1,0.8777,Not Toxic,Toxic,Toxic
+"A priest &amp; a rabbi walk through a forest where they find a boy strapped to a tree &amp; unconscious. The priest says, ""Should we screw him?""
+
+To which the rabbi replies, ""Out of what?",1,0,1,0.8672,Toxic,Not Toxic,Toxic
+"there are only two genders, male and female, and you can only be one or the other, there are no in betweens.",1,0,1,0.6276,Toxic,Not Toxic,Toxic
+"Helen Keller walked into a bar and then a chair, and then a table",1,0,1,0.9835,Toxic,Not Toxic,Toxic
+"Homeless Where do Western Hobo's go for food?
+
+Food shelter 
+
+Where do Asian Hobo's go for food?
+
+Dog shelters",1,0,1,0.9907,Toxic,Not Toxic,Toxic
+why did nobody told me asians are bad drivers ? i tried to install one inside my computer but i think he dead now .,1,0,1,0.7741,Toxic,Not Toxic,Toxic

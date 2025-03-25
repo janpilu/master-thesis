@@ -18,17 +18,26 @@ def accuracy_metric(outputs: torch.Tensor, targets: torch.Tensor) -> float:
     return accuracy_score(targets.cpu(), predictions.cpu())
 
 def f1_metric(outputs: torch.Tensor, targets: torch.Tensor) -> float:
-    """Calculate binary F1 score.
+    """Calculate F1 score for binary classification.
     
     Args:
         outputs: Model prediction logits
         targets: Ground truth labels
         
     Returns:
-        F1 score for positive class
+        F1 score
     """
     predictions = torch.argmax(outputs, dim=1)
-    return f1_score(targets.cpu(), predictions.cpu(), average='binary')
+    
+    # Handle zero division case
+    try:
+        return f1_score(targets.cpu(), predictions.cpu(), zero_division=0)
+    except:
+        # Fallback if there's still an issue
+        unique_targets = torch.unique(targets).cpu().tolist()
+        unique_preds = torch.unique(predictions).cpu().tolist()
+        print(f"Warning: F1 score calculation issues. Unique targets: {unique_targets}, Unique predictions: {unique_preds}")
+        return 0.0
 
 class ModelEvaluator:
     """Comprehensive model evaluation with detailed metrics."""

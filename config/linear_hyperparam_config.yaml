@@ -1,0 +1,29 @@
+model:
+  name: "microsoft/deberta-v3-base"
+  num_classes: 2
+  freeze_bert: false
+  classification_head:
+    input_dim: 768 # DeBERTa's hidden size
+    use_all_layers: false # Only use last layer
+    architecture:
+      - type: dropout
+        p: [0.1, 0.2, 0.3] # Will try different dropout rates
+      - type: linear
+        out_features: 2 # Binary classification
+
+training:
+  batch_size: [16, 32, 64] # Will try different batch sizes
+  learning_rate: [1e-7, 5e-7, 1e-6, 5e-6, 1e-5, 2e-5, 5e-5]
+  num_epochs: 10
+  max_length: 128
+  num_workers: 6
+  early_stopping_patience: 5
+
+data:
+  label_strategy: "toxicity_human"
+  threshold: 3.0
+
+paths:
+  checkpoint_dir: "checkpoints"
+  data_dir: "data"
+  runs_dir: "runs"
