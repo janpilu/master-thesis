@@ -9,6 +9,8 @@ from pathlib import Path
 import logging
 import json
 from typing import List, Dict, Any, Optional
+import yaml
+from datetime import datetime
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -601,6 +603,452 @@ def rank_runs():
             except Exception as e:
                 print(f"Error reading history file: {e}")
 
+def start_cross_validation():
+    """Start a cross-validation run using the best configurations from a hyperparameter search."""
+    # Get available hypersearch directories
+    hypersearch_dirs = get_hypersearch_dirs()
+    if not hypersearch_dirs:
+        print("No hyperparameter search directories found.")
+        return
+    
+    # Ask user to select a hypersearch directory
+    hypersearch_choices = [d.name for d in hypersearch_dirs]
+    hypersearch_dir_name = questionary.select(
+        "Select a hyperparameter search directory:",
+        choices=hypersearch_choices
+    ).ask()
+    
+    if not hypersearch_dir_name:
+        return
+    
+    hypersearch_dir = Path("runs") / hypersearch_dir_name
+    
+    # Collect results from all runs with history.json
+    run_results = []
+    for run_dir in sorted(hypersearch_dir.glob("run_*")):
+        if not run_dir.is_dir():
+            continue
+            
+        history_path = run_dir / "history.json"
+        if not history_path.exists():
+            continue
+        
+        try:
+            with open(history_path, 'r', encoding='utf-8') as f:
+                history = json.load(f)
+            
+            # Get run parameters
+            run_info = get_run_info(run_dir)
+            
+            # Extract best metrics
+            metrics = {}
+            if history.get('val_loss'):
+                best_val_loss = min(history['val_loss'])
+                metrics['val_loss'] = best_val_loss
+            
+            if 'metrics' in history:
+                for metric_name, values in history['metrics'].items():
+                    if values:
+                        if metric_name == 'loss':
+                            metrics[metric_name] = min(values)
+                        else:
+                            metrics[metric_name] = max(values)
+            
+            config_path = run_dir / "config.yaml"
+            
+            # Add to results
+            run_results.append({
+                'run_dir': run_dir,
+                'run_name': run_dir.name,
+                'parameters': run_info.get('parameters', {}),
+                'metrics': metrics,
+                'config_path': config_path,
+            })
+        except Exception as e:
+            logger.error(f"Error reading history for {run_dir}: {e}")
+    
+    if not run_results:
+        print(f"No runs with history found in {hypersearch_dir}.")
+        return
+    
+    # Ask user which metric to rank by
+    available_metrics = set()
+    for result in run_results:
+        available_metrics.update(result['metrics'].keys())
+    
+    metric_choices = list(available_metrics)
+    if 'val_loss' in metric_choices:
+        # Move val_loss to the front as it's commonly used
+        metric_choices.remove('val_loss')
+        metric_choices.insert(0, 'val_loss')
+    
+    rank_metric = questionary.select(
+        "Select a metric to rank by:",
+        choices=metric_choices
+    ).ask()
+    
+    if not rank_metric:
+        return
+    
+    # Filter runs that have the selected metric
+    filtered_results = [r for r in run_results if rank_metric in r['metrics']]
+    
+    if not filtered_results:
+        print(f"No runs found with metric '{rank_metric}'.")
+        return
+    
+    # Sort runs by the selected metric
+    reverse_sort = rank_metric != 'val_loss' and rank_metric != 'loss'
+    sorted_results = sorted(
+        filtered_results, 
+        key=lambda x: x['metrics'].get(rank_metric, float('inf') if not reverse_sort else float('-inf')),
+        reverse=reverse_sort
+    )
+    
+    # Get the top N runs
+    num_configs = questionary.select(
+        "How many top configurations would you like to use?",
+        choices=["1", "2", "3", "5", "10"]
+    ).ask()
+    
+    if not num_configs:
+        return
+    
+    num_configs = int(num_configs)
+    top_runs = sorted_results[:num_configs]
+    
+    # Ask for number of folds
+    n_folds = questionary.select(
+        "Select number of folds for cross-validation:",
+        choices=["5", "10"]
+    ).ask()
+    
+    if not n_folds:
+        return
+    
+    n_folds = int(n_folds)
+    
+    # Ask for number of epochs
+    epochs = questionary.text(
+        "Enter number of epochs for training (default: 10):",
+        default="10"
+    ).ask()
+    
+    try:
+        epochs = int(epochs)
+    except ValueError:
+        print("Invalid number of epochs. Using default value of 10.")
+        epochs = 10
+    
+    # Ask if user wants to freeze BERT
+    freeze_bert = questionary.confirm(
+        "Do you want to freeze the BERT base model?",
+        default=False
+    ).ask()
+    
+    # Create a directory for cross-validation runs
+    cv_base_dir = Path("runs") / f"cv_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+    cv_base_dir.mkdir(parents=True, exist_ok=True)
+    
+    # Display summary
+    print("\nCross-Validation Run Summary:")
+    print(f"Number of configurations: {num_configs}")
+    print(f"Number of folds: {n_folds}")
+    print(f"Number of epochs: {epochs}")
+    print(f"BERT frozen: {'Yes' if freeze_bert else 'No'}")
+    print(f"Output directory: {cv_base_dir}")
+    print("\nSelected configurations:")
+    
+    for i, run in enumerate(top_runs):
+        params_str = ", ".join([f"{k.split('.')[-1]}={v}" for k, v in run['parameters'].items()])
+        metric_value = run['metrics'].get(rank_metric)
+        print(f"{i+1}. {run['run_name']} - {rank_metric}: {metric_value:.4f} - {params_str}")
+    
+    # Ask for confirmation
+    proceed = questionary.confirm(
+        "Do you want to proceed with these cross-validation runs?",
+        default=True
+    ).ask()
+    
+    if not proceed:
+        return
+    
+    # Run cross-validation for each configuration
+    for i, run in enumerate(top_runs):
+        config_path = run['config_path']
+        if not config_path.exists():
+            print(f"Config file not found for {run['run_name']}. Skipping.")
+            continue
+        
+        # Create directory for this configuration
+        config_dir = cv_base_dir / f"config_{i+1}"
+        config_dir.mkdir(exist_ok=True)
+        
+        # Copy and modify the config file to include n_folds and freeze_bert
+        with open(config_path, 'r') as f:
+            config_data = yaml.safe_load(f)
+        
+        # Add cross-validation settings
+        if 'data' not in config_data:
+            config_data['data'] = {}
+        config_data['data']['n_folds'] = n_folds
+        
+        # Update training epochs
+        if 'training' not in config_data:
+            config_data['training'] = {}
+        config_data['training']['num_epochs'] = epochs
+        
+        # Add freeze_bert setting
+        if 'model' not in config_data:
+            config_data['model'] = {}
+        config_data['model']['freeze_bert'] = freeze_bert
+        
+        # Save modified config
+        new_config_path = config_dir / "config.yaml"
+        with open(new_config_path, 'w') as f:
+            yaml.dump(config_data, f, default_flow_style=False)
+        
+        # Create a params file for reference
+        with open(config_dir / "params.json", 'w') as f:
+            json.dump({
+                "original_run": run['run_name'],
+                "parameters": run['parameters'],
+                "best_metric": {rank_metric: run['metrics'][rank_metric]},
+                "n_folds": n_folds,
+                "epochs": epochs,
+                "freeze_bert": freeze_bert
+            }, f, indent=4)
+        
+        # Execute command for cross-validation
+        cmd = ["python", "hyper_main.py", "--config", str(new_config_path), "--cv", "--cv-dir", str(config_dir)]
+        print(f"\nExecuting cross-validation for configuration {i+1}/{len(top_runs)}:")
+        print(f"Command: {' '.join(cmd)}")
+        subprocess.run(cmd)
+        
+    print(f"\nCross-validation runs completed. Results saved to {cv_base_dir}")
+
+def get_cv_dirs() -> List[Path]:
+    """Get all cross-validation directories."""
+    runs_dir = Path("runs")
+    if not runs_dir.exists():
+        return []
+    
+    return sorted([d for d in runs_dir.iterdir() 
+                  if d.is_dir() and d.name.startswith("cv_")], 
+                  key=lambda x: x.stat().st_mtime, reverse=True)
+
+def get_incomplete_cv_runs(cv_dir: Path) -> List[Path]:
+    """Find configurations in a CV run that did not complete successfully."""
+    if not cv_dir.exists():
+        return []
+    
+    # Get all config directories
+    config_dirs = [d for d in cv_dir.iterdir() if d.is_dir() and d.name.startswith('config_')]
+    incomplete_configs = []
+    
+    logger.info(f"Checking {len(config_dirs)} configurations in {cv_dir}")
+    
+    for config_dir in config_dirs:
+        # Check if the config has a training.log file with completion message
+        log_file = config_dir / "training.log"
+        completed = False
+        
+        if log_file.exists():
+            try:
+                with open(log_file, 'r', encoding='utf-8') as f:
+                    log_content = f.read()
+                    # Check for both completion messages
+                    if "Cross-Validation Results Summary" in log_content:
+                        completed = True
+                        logger.info(f"Config {config_dir.name} has completion message")
+                    else:
+                        logger.info(f"Config {config_dir.name} log exists but no completion message found")
+            except Exception as e:
+                logger.error(f"Error reading log file {log_file}: {e}")
+        else:
+            logger.info(f"Config {config_dir.name} has no training.log file")
+        
+        # A config is incomplete if it doesn't have a completion message in the log
+        if not completed:
+            incomplete_configs.append(config_dir)
+            logger.info(f"Config {config_dir.name} marked as incomplete")
+    
+    logger.info(f"Found {len(incomplete_configs)} incomplete configurations")
+    return sorted(incomplete_configs, key=lambda x: int(x.name.split('_')[1]))
+
+def resume_cross_validation():
+    """Resume an incomplete cross-validation run."""
+    # Get available CV directories
+    cv_dirs = get_cv_dirs()
+    if not cv_dirs:
+        print("No cross-validation directories found.")
+        return
+    
+    # Ask user to select a CV directory
+    cv_choices = [d.name for d in cv_dirs]
+    cv_dir_name = questionary.select(
+        "Select a cross-validation directory:",
+        choices=cv_choices
+    ).ask()
+    
+    if not cv_dir_name:
+        return
+    
+    cv_dir = Path("runs") / cv_dir_name
+    
+    # Get incomplete configurations
+    incomplete_configs = get_incomplete_cv_runs(cv_dir)
+    if not incomplete_configs:
+        print(f"No incomplete configurations found in {cv_dir}.")
+        return
+    
+    # Show number of incomplete configurations and ask for confirmation
+    print(f"\nFound {len(incomplete_configs)} incomplete configurations:")
+    for config_dir in incomplete_configs:
+        # Read params.json for configuration details
+        params_path = config_dir / "params.json"
+        if params_path.exists():
+            try:
+                with open(params_path, 'r', encoding='utf-8') as f:
+                    params = json.load(f)
+                    print(f"- {config_dir.name}:")
+                    print(f"  Original run: {params.get('original_run', 'Unknown')}")
+                    print(f"  N folds: {params.get('n_folds', 'Unknown')}")
+                    print(f"  Epochs: {params.get('epochs', 'Unknown')}")
+                    print(f"  BERT frozen: {'Yes' if params.get('freeze_bert', False) else 'No'}")
+                    
+                    # Check if there's a training.log file
+                    log_file = config_dir / "training.log"
+                    if log_file.exists():
+                        print(f"  Has training.log: Yes")
+                        try:
+                            with open(log_file, 'r', encoding='utf-8') as f:
+                                log_content = f.read()
+                                if "Cross-validation completed" in log_content:
+                                    print(f"  Has completion message: Yes")
+                                else:
+                                    print(f"  Has completion message: No")
+                        except Exception as e:
+                            print(f"  Error reading log file: {e}")
+                    else:
+                        print(f"  Has training.log: No")
+            except Exception as e:
+                logger.error(f"Error reading params file {params_path}: {e}")
+                print(f"- {config_dir.name}: Error reading configuration")
+        else:
+            print(f"- {config_dir.name}: No configuration details available")
+    
+    proceed = questionary.confirm(
+        f"\nDo you want to continue with these {len(incomplete_configs)} configurations?",
+        default=True
+    ).ask()
+    
+    if not proceed:
+        return
+    
+    # Ask if user wants to restart the incomplete configurations
+    restart_last = questionary.confirm(
+        "Do you want to restart the incomplete configurations completely? If No, only missing folds will be run.",
+        default=False
+    ).ask()
+    
+    # Run cross-validation for each incomplete configuration
+    for config_dir in incomplete_configs:
+        config_path = config_dir / "config.yaml"
+        if not config_path.exists():
+            print(f"Config file not found for {config_dir.name}. Skipping.")
+            continue
+        
+        # If restart_last is False, try to identify and run only missing folds
+        missing_folds = []
+        if not restart_last:
+            # First, determine the total number of folds from config or params
+            n_folds = None
+            
+            # Try to get n_folds from params.json
+            params_path = config_dir / "params.json"
+            if params_path.exists():
+                try:
+                    with open(params_path, 'r', encoding='utf-8') as f:
+                        params = json.load(f)
+                        n_folds = params.get('n_folds')
+                except Exception as e:
+                    logger.error(f"Error reading params file {params_path}: {e}")
+            
+            # If not found in params, try to get from config.yaml
+            if n_folds is None:
+                try:
+                    with open(config_path, 'r', encoding='utf-8') as f:
+                        config_data = yaml.safe_load(f)
+                        if 'data' in config_data and 'n_folds' in config_data['data']:
+                            n_folds = config_data['data']['n_folds']
+                except Exception as e:
+                    logger.error(f"Error reading config file {config_path}: {e}")
+            
+            # Default to 5 if we couldn't determine the number of folds
+            if n_folds is None:
+                logger.warning(f"Could not determine number of folds for {config_dir.name}. Using default of 5.")
+                n_folds = 5
+            
+            # Check the training log for completed folds
+            log_file = config_dir / "training.log"
+            completed_folds = set()
+            
+            if log_file.exists():
+                try:
+                    with open(log_file, 'r', encoding='utf-8') as f:
+                        log_content = f.read()
+                        # Look for fold completion messages in the log
+                        for fold in range(n_folds):
+                            # Check for the exact message pattern in the log
+                            fold_completion_msg = f"Completed fold {fold + 1}/{n_folds}"
+                            if fold_completion_msg in log_content:
+                                logger.info(f"Found completion message for fold {fold} in log")
+                                completed_folds.add(fold)
+                except Exception as e:
+                    logger.error(f"Error reading log file {log_file}: {e}")
+            
+            # If we didn't find any fold completion messages, fall back to directory-based check
+            if not completed_folds:
+                logger.info(f"No fold completion messages found in log, checking directories...")
+                for fold in range(n_folds):
+                    fold_dir = config_dir / f"fold_{fold}"
+                    if fold_dir.exists():
+                        model_file = fold_dir / "best-model.pt"  # Change to best-model.pt which is what actually gets saved
+                        metrics_file = fold_dir / "metrics.json"
+                        
+                        if model_file.exists() and metrics_file.exists():
+                            completed_folds.add(fold)
+                            logger.info(f"Fold {fold} is complete based on directory check in {config_dir.name}")
+            
+            # Determine missing folds
+            missing_folds = [fold for fold in range(n_folds) if fold not in completed_folds]
+            
+            if not missing_folds and not completed_folds:
+                # If we didn't find any completed or missing folds, 
+                # assume all folds need to be rerun for consistency
+                logger.warning(f"No fold information found in {config_dir.name}. Will rerun all folds.")
+                missing_folds = list(range(n_folds))
+                
+            print(f"\nConfiguration {config_dir.name} has {len(missing_folds)} missing folds: {missing_folds}")
+            print(f"Completed folds: {sorted(list(completed_folds))}")
+        
+        # Execute command for cross-validation
+        cmd = ["python", "hyper_main.py", "--config", str(config_path), "--cv", "--cv-dir", str(config_dir)]
+        
+        if restart_last:
+            cmd.append("--restart-last")
+        elif missing_folds:
+            # Specify which folds to run
+            cmd.append("--folds")
+            cmd.append(",".join(map(str, missing_folds)))
+        
+        print(f"\nExecuting cross-validation for {config_dir.name}:")
+        print(f"Command: {' '.join(cmd)}")
+        subprocess.run(cmd)
+    
+    print(f"\nCross-validation runs completed. Results saved to {cv_dir}")
+
 def main():
     """Main CLI entrypoint."""
     print("Welcome to the Hyperparameter Search CLI")
@@ -615,6 +1063,8 @@ def main():
                 "Continue an existing hyperparameter search run",
                 "View results of completed runs",
                 "Rank runs by performance",
+                "Start cross-validation with best runs",
+                "Resume cross-validation run",
                 "Evaluate misclassifications",
                 "Launch annotation tool",
                 "Exit"
@@ -629,6 +1079,10 @@ def main():
             view_results()
         elif action == "Rank runs by performance":
             rank_runs()
+        elif action == "Start cross-validation with best runs":
+            start_cross_validation()
+        elif action == "Resume cross-validation run":
+            resume_cross_validation()
         elif action == "Evaluate misclassifications":
             evaluate_misclassifications()
         elif action == "Launch annotation tool":

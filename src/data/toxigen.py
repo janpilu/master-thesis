@@ -1,9 +1,11 @@
 """ToxiGen dataset implementation for hate speech classification."""
 
-from typing import Dict, Union, Callable, Optional
-from torch.utils.data import DataLoader
+from typing import Dict, Union, Callable, Optional, List
+from torch.utils.data import DataLoader, Subset
 import torch
-from datasets import load_dataset
+from datasets import load_dataset, concatenate_datasets
+from sklearn.model_selection import KFold
+import numpy as np
 from src.data.dataset import BaseDataset
 from src.utils.config import Config
 
@@ -34,7 +36,11 @@ class ToxiGenDataset(BaseDataset):
             preprocessing_fn: Optional text preprocessing function
         """
         super().__init__(tokenizer_name, max_length, preprocessing_fn)
-        self.dataset = load_dataset("toxigen/toxigen-data", "annotated")[split]
+        if split == 'full':
+            dataset = load_dataset("toxigen/toxigen-data", "annotated")
+            self.dataset = concatenate_datasets([dataset['train'], dataset['test']])
+        else:
+            self.dataset = load_dataset("toxigen/toxigen-data", "annotated")[split]
         self.label_strategy = label_strategy
         self.label_threshold = label_threshold
 
@@ -93,8 +99,11 @@ class ToxiGenDataModule:
         self.label_strategy = config.data_config['label_strategy']
         self.label_threshold = config.data_config.get('threshold', 0.5)
         self.num_workers = config.training_config['num_workers']
+        self.n_folds = config.data_config.get('n_folds', None)  # New parameter for k-fold CV
         self.preprocessing_fn = None
         self.datasets = {}
+        self.current_fold = None
+        self.fold_indices = None
 
     @classmethod
     def from_params(
@@ -106,6 +115,7 @@ class ToxiGenDataModule:
         label_threshold: float = 0.5,
         num_workers: int = 4,
         preprocessing_fn: Optional[Callable] = None,
+        n_folds: Optional[int] = None,
     ):
         """Initialize using individual parameters.
         
@@ -116,6 +126,7 @@ class ToxiGenDataModule:
             label_strategy: Strategy for converting toxicity scores to labels
             label_threshold: Threshold for binary classification
             num_workers: Number of worker processes for data loading
+            n_folds: Number of folds for k-fold cross-validation
         """
         instance = cls.__new__(cls)
         instance.tokenizer_name = tokenizer_name
@@ -125,11 +136,14 @@ class ToxiGenDataModule:
         instance.label_threshold = label_threshold
         instance.num_workers = num_workers
         instance.preprocessing_fn = preprocessing_fn
+        instance.n_folds = n_folds
         instance.datasets = {}
+        instance.current_fold = None
+        instance.fold_indices = None
         return instance
 
     def setup(self):
-        """Initialize train and test dataset splits."""
+        """Initialize dataset splits."""
         for split in ['train', 'test']:
             self.datasets[split] = ToxiGenDataset(
                 split=split,
@@ -139,6 +153,38 @@ class ToxiGenDataModule:
                 label_threshold=self.label_threshold,
                 preprocessing_fn=self.preprocessing_fn
             )
+        if self.n_folds is not None:
+            # Original behavior: use predefined train/test splits
+            # K-fold cross-validation setup
+            # Load all data into a single dataset
+            self.datasets['full'] = ToxiGenDataset(
+                split='full',
+                tokenizer_name=self.tokenizer_name,
+                max_length=self.max_length,
+                label_strategy=self.label_strategy,
+                label_threshold=self.label_threshold,
+                preprocessing_fn=self.preprocessing_fn
+            )
+            
+            # Initialize k-fold splitter
+            kf = KFold(n_splits=self.n_folds, shuffle=True, random_state=42)
+            
+            # Generate and store fold indices
+            self.fold_indices = list(kf.split(range(len(self.datasets['full']))))
+
+    def set_fold(self, fold_idx: int):
+        """Set the current fold for cross-validation.
+        
+        Args:
+            fold_idx: Index of the fold to use (0 to n_folds-1)
+        """
+        if self.n_folds is None:
+            raise ValueError("K-fold cross-validation not enabled. Initialize with n_folds parameter.")
+        
+        if not 0 <= fold_idx < self.n_folds:
+            raise ValueError(f"Fold index must be between 0 and {self.n_folds-1}")
+        
+        self.current_fold = fold_idx
 
     def get_dataloaders(self) -> Dict[str, DataLoader]:
         """Create DataLoader instances for each dataset split.
@@ -146,12 +192,40 @@ class ToxiGenDataModule:
         Returns:
             Dictionary mapping split names to DataLoader instances
         """
-        return {
-            split: DataLoader(
-                dataset,
-                batch_size=self.batch_size,
-                shuffle=(split == 'train'),
-                num_workers=self.num_workers,
-            )
-            for split, dataset in self.datasets.items()
-        } 
+        if self.n_folds is None:
+            # Original behavior with train/test splits
+            return {
+                split: DataLoader(
+                    dataset,
+                    batch_size=self.batch_size,
+                    shuffle=(split == 'train'),
+                    num_workers=self.num_workers,
+                )
+                for split, dataset in self.datasets.items()
+            }
+        else:
+            # K-fold cross-validation behavior
+            if self.current_fold is None:
+                raise ValueError("Must call set_fold() before getting dataloaders in k-fold mode")
+            
+            # Get fold indices for this fold
+            train_idx, val_idx = self.fold_indices[self.current_fold]
+            
+            # Convert NumPy int64 indices to Python ints to avoid compatibility issues
+            train_idx = [int(idx) for idx in train_idx]
+            val_idx = [int(idx) for idx in val_idx]
+            
+            return {
+                'train': DataLoader(
+                    Subset(self.datasets['full'], train_idx),
+                    batch_size=self.batch_size,
+                    shuffle=True,
+                    num_workers=self.num_workers,
+                ),
+                'test': DataLoader(
+                    Subset(self.datasets['full'], val_idx),
+                    batch_size=self.batch_size,
+                    shuffle=False,
+                    num_workers=self.num_workers,
+                )
+            } 

@@ -8,7 +8,9 @@ from pathlib import Path
 import json
 import argparse
 from datasets import Dataset
-from sklearn.metrics import roc_curve, auc, confusion_matrix, accuracy_score, precision_recall_curve
+from sklearn.metrics import roc_curve, auc, confusion_matrix, accuracy_score, precision_recall_curve, average_precision_score
+import os
+import datetime
 
 
 class AnnotationTool:
@@ -84,7 +86,7 @@ class AnnotationTool:
 
         self._save_annotations()
 
-    def analyze_annotations(self):
+    def analyze_annotations(self, show_plots=True):
         """Analyze and visualize annotation statistics compared to original scores.
         
         Generates:
@@ -119,13 +121,21 @@ class AnnotationTool:
         print("\nScore distribution for each label:")
         print(score_distribution)
 
+        # Prepare plot directory
+        plot_dir = self.save_path.parent / "plots"
+        os.makedirs(plot_dir, exist_ok=True)
+
         # Create visualization
         plt.figure(figsize=(10, 6))
         sns.boxplot(x="hate_label", y="original_score", data=df_analysis)
         plt.title("Distribution of Original Scores vs Binary Labels")
         plt.xlabel("Your Hate Speech Label (0: No, 1: Yes)")
         plt.ylabel("Original Toxicity Score")
-        plt.show()
+        plt.savefig(plot_dir / "boxplot.png")
+        if show_plots:
+            plt.show()
+        else:
+            plt.close()
 
         # Create histogram
         plt.figure(figsize=(10, 6))
@@ -136,15 +146,19 @@ class AnnotationTool:
         plt.xlabel("Original Toxicity Score")
         plt.ylabel("Count")
         plt.legend()
-        plt.show()
+        plt.savefig(plot_dir / "histogram.png")
+        if show_plots:
+            plt.show()
+        else:
+            plt.close()
         
         # Calculate optimal threshold
         if all(label in df_analysis["hate_label"].values for label in [0, 1]):
-            self._calculate_optimal_threshold(df_analysis)
+            self._calculate_optimal_threshold(df_analysis, show_plots=show_plots)
         else:
             print("Need both positive and negative examples to calculate optimal threshold")
     
-    def _calculate_optimal_threshold(self, df):
+    def _calculate_optimal_threshold(self, df, show_plots=True):
         """Calculate the optimal threshold for toxicity prediction.
         
         Args:
@@ -152,7 +166,7 @@ class AnnotationTool:
             
         Generates:
             - ROC curve visualization
-            - Accuracy vs threshold curve
+            - Accuracy vs threshold curve (with fine-grained steps)
             - Confusion matrix at optimal threshold
         """
         # Extract scores and labels
@@ -160,9 +174,13 @@ class AnnotationTool:
         labels = df["hate_label"].values
         
         # Calculate ROC curve and AUC
-        fpr, tpr, thresholds = roc_curve(labels, scores)
+        fpr, tpr, thresholds_roc = roc_curve(labels, scores)
         roc_auc = auc(fpr, tpr)
         
+        # Prepare plot directory
+        plot_dir = self.save_path.parent / "plots"
+        os.makedirs(plot_dir, exist_ok=True)
+
         # Plot ROC curve
         plt.figure(figsize=(10, 6))
         plt.plot(fpr, tpr, color='darkorange', lw=2, label=f'ROC curve (AUC = {roc_auc:.2f})')
@@ -173,29 +191,46 @@ class AnnotationTool:
         plt.ylabel('True Positive Rate')
         plt.title('Receiver Operating Characteristic (ROC) Curve')
         plt.legend(loc="lower right")
-        plt.show()
+        plt.savefig(plot_dir / "roc_curve.png")
+        if show_plots:
+            plt.show()
+        else:
+            plt.close()
         
-        # Calculate accuracy at different thresholds
+        
+        step = 0.0001
+        thresholds = np.arange(1, 5 + step, step)
         accuracies = []
         for threshold in thresholds:
             predicted_labels = (scores >= threshold).astype(int)
             accuracies.append(accuracy_score(labels, predicted_labels))
         
-        # Find optimal threshold
-        optimal_idx = np.argmax(accuracies)
-        optimal_threshold = thresholds[optimal_idx]
-        optimal_accuracy = accuracies[optimal_idx]
+        # Find all optimal thresholds
+        max_accuracy = np.max(accuracies)
+        optimal_indices = np.where(np.array(accuracies) == max_accuracy)[0]
+        optimal_thresholds = thresholds[optimal_indices]
+        
+        # For reporting, pick the highest optimal threshold (for inclusive '>= threshold' logic)
+        optimal_threshold = optimal_thresholds[-1]
+        optimal_accuracy = max_accuracy
         
         # Plot accuracy vs threshold
         plt.figure(figsize=(10, 6))
-        plt.plot(thresholds, accuracies, lw=2)
-        plt.axvline(x=optimal_threshold, color='r', linestyle='--', 
-                    label=f'Optimal threshold = {optimal_threshold:.2f}')
+        plt.plot(thresholds, accuracies, lw=2, label='Accuracy')
+        # Shade the region of optimal thresholds if more than one
+        if len(optimal_thresholds) > 1:
+            plt.axvspan(optimal_thresholds[0], optimal_thresholds[-1], color='orange', alpha=0.3, label='Optimal threshold region')
+        else:
+            plt.axvline(x=optimal_threshold, color='r', linestyle='--', label=f'Optimal threshold = {optimal_threshold:.2f}')
         plt.xlabel('Threshold')
         plt.ylabel('Accuracy')
-        plt.title('Accuracy vs Threshold')
+        plt.title(f'Accuracy vs Threshold (step={step})')
         plt.legend()
-        plt.show()
+        plt.savefig(plot_dir / "accuracy_vs_threshold.png")
+        if show_plots:
+            plt.show()
+        else:
+            plt.close()
         
         # Calculate confusion matrix at optimal threshold
         predicted_labels = (scores >= optimal_threshold).astype(int)
@@ -209,25 +244,45 @@ class AnnotationTool:
         plt.xlabel('Predicted')
         plt.ylabel('Actual')
         plt.title(f'Confusion Matrix at Threshold = {optimal_threshold:.2f}')
-        plt.show()
+        plt.savefig(plot_dir / "confusion_matrix.png")
+        if show_plots:
+            plt.show()
+        else:
+            plt.close()
         
         # Calculate precision-recall curve
         precision, recall, pr_thresholds = precision_recall_curve(labels, scores)
         
+        # Calculate area under the precision-recall curve (AUC-PR)
+        auc_pr = average_precision_score(labels, scores)
+        print(f"Area under Precision-Recall curve (AUC-PR): {auc_pr:.4f}")
+        
         # Plot precision-recall curve
         plt.figure(figsize=(10, 6))
-        plt.plot(recall, precision, lw=2)
+        plt.plot(recall, precision, lw=2, label=f'PR curve (AUC = {auc_pr:.2f})')
         plt.xlabel('Recall')
         plt.ylabel('Precision')
         plt.title('Precision-Recall Curve')
-        plt.show()
+        plt.legend()
+        plt.savefig(plot_dir / "precision_recall_curve.png")
+        if show_plots:
+            plt.show()
+        else:
+            plt.close()
         
         # Print results
-        print(f"\nOptimal toxicity score threshold: {optimal_threshold:.4f}")
-        print(f"Accuracy at optimal threshold: {optimal_accuracy:.4f}")
-        print("\nAt this threshold:")
-        print(f"- Scores >= {optimal_threshold:.4f} should be classified as toxic")
-        print(f"- Scores < {optimal_threshold:.4f} should be classified as non-toxic")
+        if len(optimal_thresholds) > 1:
+            print(f"\nOptimal toxicity score threshold range: {optimal_thresholds[0]:.4f} to {optimal_thresholds[-1]:.4f}")
+            print(f"Accuracy at optimal thresholds: {optimal_accuracy:.4f}")
+            print("\nAt these thresholds:")
+            print(f"- Scores >= {optimal_thresholds[-1]:.4f} should be classified as toxic")
+            print(f"- Scores < {optimal_thresholds[-1]:.4f} should be classified as non-toxic")
+        else:
+            print(f"\nOptimal toxicity score threshold: {optimal_threshold:.4f}")
+            print(f"Accuracy at optimal threshold: {optimal_accuracy:.4f}")
+            print("\nAt this threshold:")
+            print(f"- Scores >= {optimal_threshold:.4f} should be classified as toxic")
+            print(f"- Scores < {optimal_threshold:.4f} should be classified as non-toxic")
 
 
 if __name__ == "__main__":
@@ -235,7 +290,8 @@ if __name__ == "__main__":
     
     # Parse command line arguments
     parser = argparse.ArgumentParser(description="Interactive annotation tool for hate speech data")
-    parser.add_argument("--analyze-only", action="store_true", help="Only analyze existing annotations without annotating new samples")
+    parser.add_argument("--analyze-only", action="store_true", help="Only analyze existing annotations and show plots without annotating new samples")
+    parser.add_argument("--generate-only", action="store_true", help="Only generate and save plots without showing them or annotating new samples")
     parser.add_argument("--samples", type=int, default=10, help="Number of samples to annotate (default: 10)")
     parser.add_argument("--save-path", type=str, default="annotations.json", help="Path to save annotations (default: annotations.json)")
     args = parser.parse_args()
@@ -245,8 +301,8 @@ if __name__ == "__main__":
     tool = AnnotationTool(dataset["train"], save_path=args.save_path)
     
     # Run the tool based on arguments
-    if not args.analyze_only:
+    if not args.analyze_only and not args.generate_only:
         tool.annotate_samples(n_samples=args.samples)
     
-    # Always analyze annotations
-    tool.analyze_annotations()
+    # Analyze annotations, show plots unless generate_only is set
+    tool.analyze_annotations(show_plots=not args.generate_only)

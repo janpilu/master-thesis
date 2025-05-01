@@ -8,6 +8,7 @@ from typing import Dict, List, Any
 import os
 import json
 import yaml
+from datetime import datetime
 
 from src.data.toxigen import ToxiGenDataModule
 from src.models.factory import ModelFactory
@@ -147,6 +148,12 @@ def parse_args():
                         help='Continue from a specific hyperparameter search directory')
     parser.add_argument('--restart-last', action='store_true',
                         help='When continuing, restart the last run that was in progress')
+    parser.add_argument('--cv', action='store_true',
+                        help='Run in cross-validation mode')
+    parser.add_argument('--cv-dir', type=str,
+                        help='Directory for cross-validation results')
+    parser.add_argument('--folds', type=str,
+                        help='Comma-separated list of fold indices to run (e.g., "0,2,4"), only used with --cv')
     return parser.parse_args()
 
 def parse_param_variations(param_variations_args: List[str]) -> Dict[str, List[Any]]:
@@ -294,64 +301,118 @@ def continue_hyperparam_search(hypersearch_dir: Path, restart_last: bool = False
             continue
 
 def main():
-    """Run hyperparameter search based on command line arguments."""
+    """Main entry point for the script."""
     args = parse_args()
     
-    # Check if we're continuing from a previous run
-    if args.continue_from:
-        hypersearch_dir = Path(args.continue_from)
-        if not hypersearch_dir.exists() or not hypersearch_dir.is_dir():
-            logger.error(f"Hyperparameter search directory not found: {hypersearch_dir}")
-            return
-        
-        continue_hyperparam_search(hypersearch_dir, args.restart_last)
-        return
-    
-    # If no config provided, use the first config file in the config folder
-    config_path = args.config
-    if not config_path:
-        first_config = get_first_config_file()
-        if not first_config:
-            logger.error("No config file provided and no config files found in config directory")
-            return
-        config_path = str(first_config)
-        logger.info(f"No config file provided, using first config file: {config_path}")
-    
-    logger.info(f"Running hyperparameter search with base config: {config_path}")
-    
-    # Create hyperparameter search
-    search = HyperParamSearch(config_path)
-    
-    # Parse parameter variations from command line if provided
-    param_variations = None
-    if args.param_variations:
-        param_variations = parse_param_variations(args.param_variations)
-        logger.info(f"Using parameter variations from command line: {param_variations}")
-    else:
-        logger.info("No command line parameter variations provided, using variations from config file if any")
-    
-    # Run grid search (will automatically extract variations from config if param_variations is None)
-    run_dirs = search.run_grid_search(param_variations, args.run_prefix)
-    
-    if not run_dirs:
-        logger.warning("No runs were created. Ensure your config has parameter variations.")
-        return
-        
-    logger.info(f"Created {len(run_dirs)} configurations")
-    
-    # Execute training runs by default, unless --no-execute is specified
-    if not args.no_execute:
-        logger.info("Executing training runs")
-        for run_dir in run_dirs:
-            config_path = Path(run_dir) / "config.yaml"
+    if args.cv and args.config:
+        # Run in cross-validation mode
+        folds = None
+        if args.folds:
             try:
-                train_model(config_path)
-            except Exception as e:
-                logger.error(f"Error training with config {config_path}: {str(e)}")
-                continue
+                folds = [int(fold) for fold in args.folds.split(',')]
+                logger.info(f"Running specific folds: {folds}")
+            except ValueError:
+                logger.error(f"Invalid folds format: {args.folds}. Expected comma-separated integers.")
+                return
+                
+        run_cross_validation(Path(args.config), cv_dir=args.cv_dir, folds=folds)
+        return
+    
+    if args.continue_from:
+        # Continue from existing run
+        continue_hyperparam_search(Path(args.continue_from), args.restart_last)
+        return
+    
+    if not args.config:
+        logger.error("Config file not provided")
+        parser.print_help()
+        return
+    
+    # Run new hyperparameter search
+    config_path = Path(args.config)
+    
+    variations = []
+    if args.param_variations:
+        for variation in args.param_variations:
+            param_path, values = variation.split("=", 1)
+            variations.append((param_path, values.split(",")))
+    
+    hp_search = HyperParamSearch(config_path, variations)
+    hp_search.run(not args.no_execute)
+
+def run_cross_validation(config_path: Path, cv_dir: str = None, folds: List[int] = None):
+    """Run cross-validation using the specified config.
+    
+    Args:
+        config_path: Path to the configuration file
+        cv_dir: Optional directory for cross-validation results
+        folds: Optional list of specific fold indices to run, if None runs all folds
+    """
+    logger.info(f"Starting cross-validation run with config: {config_path}")
+    config = Config(config_path=str(config_path))
+    
+    if 'n_folds' not in config.data_config:
+        logger.error("Cross-validation requires n_folds parameter in data config")
+        return
+    
+    n_folds = config.data_config['n_folds']
+    
+    if folds:
+        # Validate fold indices
+        invalid_folds = [f for f in folds if f < 0 or f >= n_folds]
+        if invalid_folds:
+            logger.error(f"Invalid fold indices: {invalid_folds}. Must be between 0 and {n_folds-1}")
+            return
+        logger.info(f"Running specific folds: {folds} out of {n_folds} total folds")
     else:
-        logger.info("Skipping training runs (--no-execute specified)")
-        logger.info(f"Run directories created: {run_dirs}")
+        logger.info(f"Running all {n_folds} folds for cross-validation")
+    
+    # Set up directories
+    if cv_dir:
+        run_dir = Path(cv_dir)
+    else:
+        timestamp = datetime.now().strftime("%Y-%m-%d-%H:%M:%S")
+        run_dir = Path(config.paths['runs_dir']) / f"cv_{timestamp}"
+    
+    run_dir.mkdir(parents=True, exist_ok=True)
+    
+    # Save config
+    config_copy_path = run_dir / "config.yaml"
+    with open(config_copy_path, "w", encoding="utf-8") as f:
+        yaml.dump(config.to_dict(), f, default_flow_style=False)
+    
+    # Set random seeds for reproducibility
+    if 'random_seed' in config.training_config:
+        seed = config.training_config['random_seed']
+        logger.info(f"Setting random seed to {seed}")
+        import random
+        import numpy as np
+        
+        random.seed(seed)
+        np.random.seed(seed)
+        torch.manual_seed(seed)
+        if torch.cuda.is_available():
+            torch.cuda.manual_seed_all(seed)
+        if torch.backends.mps.is_available():
+            torch.mps.manual_seed(seed)
+    
+    # Set up model and dataloaders
+    device = get_device()
+    logger.info(f"Using device: {device}")
+    
+    data_module = ToxiGenDataModule(config)
+    data_module.setup()
+    
+    model = ModelFactory.create_model(config)
+    
+    # Initialize trainer
+    trainer = Trainer(model, config, device, run_dir=run_dir)
+    
+    # Run cross-validation
+    trainer.train_cv(data_module, config.training_config['num_epochs'], folds=folds)
+    
+    logger.info(f"Cross-validation completed. Results saved to {run_dir}")
+    logger.info("Check cross_validation/cv_results.json for aggregated metrics")
 
 if __name__ == "__main__":
     main() 

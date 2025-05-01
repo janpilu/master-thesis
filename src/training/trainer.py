@@ -4,7 +4,7 @@ import torch
 from torch.optim import AdamW
 from torch.utils.data import DataLoader
 from tqdm import tqdm
-from typing import Dict
+from typing import Dict, List, Optional
 from pathlib import Path
 import json
 import yaml
@@ -12,6 +12,7 @@ from datetime import datetime
 import pandas as pd
 import matplotlib.pyplot as plt
 import seaborn as sns
+import numpy as np
 from ..utils.config import Config
 from .metrics import accuracy_metric, f1_metric
 from .early_stopping import EarlyStopping
@@ -27,8 +28,7 @@ class Trainer:
             model: Neural network model to train
             config: Configuration object
             device: Device to use for training
-            run_dir: Optional directory path for this run. If provided, will use this
-                    instead of creating a new directory.
+            run_dir: Optional directory path for this run
         """
         self.device = device
         self.model = model.to(self.device)
@@ -38,12 +38,9 @@ class Trainer:
         if run_dir is not None:
             self.run_dir = Path(run_dir)
         else:
-            # Create run directory with YYYY-MM-DD-HH:MM:SS format
             date_format = datetime.now().strftime("%Y-%m-%d-%H:%M:%S")
             self.run_dir = Path(config.paths['runs_dir']) / date_format
-            # If the directory already exists, add a suffix
             if self.run_dir.exists():
-                # Find all directories with the same date prefix and add a suffix
                 existing_dirs = list(Path(config.paths['runs_dir']).glob(f"{date_format}*"))
                 suffix = len(existing_dirs) + 1
                 self.run_dir = Path(config.paths['runs_dir']) / f"{date_format}-{suffix}"
@@ -55,7 +52,6 @@ class Trainer:
         self.criterion = torch.nn.CrossEntropyLoss()
         self.metrics = {'accuracy': accuracy_metric, 'f1_score': f1_metric}
         
-        # Save config (only if we created the directory)
         if run_dir is None:
             self._save_config()
         
@@ -65,12 +61,14 @@ class Trainer:
             patience=config.training_config['early_stopping_patience']
         )
         
-        # Setup scheduler
         self._setup_scheduler()
-        
-        # Initialize history and create log file
         self.history = self._initialize_history()
         self._setup_logging()
+        
+        # Cross-validation specific attributes
+        self.fold_histories: List[Dict] = []
+        self.current_fold: Optional[int] = None
+        self.n_folds = config.data_config.get('n_folds', None)
 
     def _setup_scheduler(self):
         """Initialize learning rate scheduler if configured."""
@@ -99,7 +97,8 @@ class Trainer:
             'metrics': {},
             'epoch_times': [],
             'total_parameters': sum(p.numel() for p in self.model.parameters()),
-            'trainable_parameters': sum(p.numel() for p in self.model.parameters() if p.requires_grad)
+            'trainable_parameters': sum(p.numel() for p in self.model.parameters() if p.requires_grad),
+            'fold_idx': None  # Track which fold this history belongs to
         }
 
     def _setup_logging(self):
@@ -116,9 +115,10 @@ class Trainer:
         with open(self.log_file, "a", encoding="utf-8") as f:
             f.write(f"[{timestamp}] {message}\n")
 
-    def _save_plots(self):
+    def _save_plots(self, save_dir: Path = None):
         """Generate and save training visualization plots."""
-        # Loss plot
+        save_dir = save_dir or self.run_dir
+        
         plt.figure(figsize=(10, 6))
         plt.plot(self.history['train_loss'], label='Train Loss')
         plt.plot(self.history['val_loss'], label='Validation Loss')
@@ -126,10 +126,9 @@ class Trainer:
         plt.xlabel('Epoch')
         plt.ylabel('Loss')
         plt.legend()
-        plt.savefig(self.run_dir / "loss_plot.png")
+        plt.savefig(save_dir / "loss_plot.png")
         plt.close()
 
-        # Metrics plot
         plt.figure(figsize=(10, 6))
         for metric_name, values in self.history['metrics'].items():
             if metric_name != 'loss':
@@ -138,23 +137,173 @@ class Trainer:
         plt.xlabel('Epoch')
         plt.ylabel('Score')
         plt.legend()
-        plt.savefig(self.run_dir / "metrics_plot.png")
+        plt.savefig(save_dir / "metrics_plot.png")
         plt.close()
 
-    def _save_history(self):
+    def _save_history(self, save_dir: Path = None):
         """Save training history to CSV and JSON."""
-        # Save detailed history as JSON
-        with open(self.run_dir / "history.json", "w", encoding="utf-8") as f:
+        save_dir = save_dir or self.run_dir
+        
+        with open(save_dir / "history.json", "w", encoding="utf-8") as f:
             json.dump(self.history, f, indent=4)
 
-        # Save metrics history as CSV for easy analysis
         history_df = pd.DataFrame({
             'epoch': range(1, len(self.history['train_loss']) + 1),
             'train_loss': self.history['train_loss'],
             'val_loss': self.history['val_loss'],
             **{f'val_{k}': v for k, v in self.history['metrics'].items() if k != 'loss'}
         })
-        history_df.to_csv(self.run_dir / "metrics.csv", index=False)
+        history_df.to_csv(save_dir / "metrics.csv", index=False)
+
+    def _save_cv_results(self):
+        """Save cross-validation results and aggregate metrics."""
+        if not self.fold_histories:
+            return
+
+        # Create CV results directory
+        cv_dir = self.run_dir / "cross_validation"
+        cv_dir.mkdir(exist_ok=True)
+
+        # Calculate mean and std of metrics across folds
+        cv_metrics = {
+            'val_loss': {'values': [], 'mean': 0.0, 'std': 0.0},
+            'val_accuracy': {'values': [], 'mean': 0.0, 'std': 0.0},
+            'val_f1_score': {'values': [], 'mean': 0.0, 'std': 0.0}
+        }
+
+        # Collect final metrics from each fold
+        for fold_idx, history in enumerate(self.fold_histories):
+            cv_metrics['val_loss']['values'].append(min(history['val_loss']))
+            cv_metrics['val_accuracy']['values'].append(max(history['metrics']['accuracy']))
+            cv_metrics['val_f1_score']['values'].append(max(history['metrics']['f1_score']))
+
+        # Calculate statistics
+        for metric_name, metric_data in cv_metrics.items():
+            values = np.array(metric_data['values'])
+            metric_data['mean'] = float(np.mean(values))
+            metric_data['std'] = float(np.std(values))
+
+        # Save CV metrics
+        with open(cv_dir / "cv_results.json", "w", encoding="utf-8") as f:
+            json.dump(cv_metrics, f, indent=4)
+
+        # Create CV metrics plot
+        plt.figure(figsize=(12, 6))
+        metrics_df = pd.DataFrame({
+            'Fold': range(1, len(self.fold_histories) + 1),
+            'Validation Loss': cv_metrics['val_loss']['values'],
+            'Accuracy': cv_metrics['val_accuracy']['values'],
+            'F1 Score': cv_metrics['val_f1_score']['values']
+        })
+        
+        metrics_df_melted = pd.melt(metrics_df, id_vars=['Fold'], 
+                                  var_name='Metric', value_name='Value')
+        
+        sns.boxplot(data=metrics_df_melted, x='Metric', y='Value')
+        plt.title('Cross-Validation Metrics Distribution')
+        plt.savefig(cv_dir / "cv_metrics_boxplot.png")
+        plt.close()
+
+        # Log CV summary
+        self._log("\nCross-Validation Results Summary:")
+        for metric_name, metric_data in cv_metrics.items():
+            self._log(f"{metric_name}:")
+            self._log(f"  Mean: {metric_data['mean']:.4f}")
+            self._log(f"  Std:  {metric_data['std']:.4f}")
+
+    def train_fold(self, fold_idx: int, data_module, num_epochs: int) -> Dict:
+        """Train model on a specific cross-validation fold.
+        
+        Args:
+            fold_idx: Index of the current fold
+            data_module: DataModule instance with cross-validation support
+            num_epochs: Number of epochs to train
+            
+        Returns:
+            Dictionary containing training history for this fold
+        """
+        self._log(f"\nStarting training for fold {fold_idx + 1}/{self.n_folds}")
+        
+        # Reset model and optimizer state
+        self.model.apply(lambda m: m.reset_parameters() if hasattr(m, 'reset_parameters') else None)
+        self.optimizer = AdamW(self.model.parameters(), lr=float(self.config.training_config['learning_rate']))
+        self._setup_scheduler()
+        self.early_stopping = EarlyStopping(patience=self.config.training_config['early_stopping_patience'])
+        
+        # Set up fold-specific directory and history
+        fold_dir = self.run_dir / f"fold_{fold_idx + 1}"
+        fold_dir.mkdir(exist_ok=True)
+        
+        # Initialize new history for this fold
+        self.history = self._initialize_history()
+        self.history['fold_idx'] = fold_idx
+        
+        # Set the current fold in the data module and get dataloaders
+        data_module.set_fold(fold_idx)
+        dataloaders = data_module.get_dataloaders()
+        
+        # Train the model for this fold
+        self.train(
+            train_loader=dataloaders['train'],
+            val_loader=dataloaders['test'],
+            num_epochs=num_epochs,
+            fold_dir=fold_dir
+        )
+        
+        # Store fold history
+        self.fold_histories.append(self.history)
+        
+        return self.history
+
+    def train_cv(self, data_module, num_epochs: int, folds: List[int] = None) -> List[Dict]:
+        """Execute complete cross-validation training.
+        
+        Args:
+            data_module: DataModule instance with cross-validation support
+            num_epochs: Number of epochs to train each fold
+            folds: Optional list of specific fold indices to run, if None runs all folds
+            
+        Returns:
+            List of training histories for each fold
+        """
+        if self.n_folds is None:
+            raise ValueError("Cross-validation not enabled. Initialize trainer with n_folds parameter.")
+
+        # Determine which folds to run
+        if folds is None:
+            folds_to_run = list(range(self.n_folds))
+        else:
+            folds_to_run = folds
+            # Validate fold indices
+            invalid_folds = [f for f in folds_to_run if f < 0 or f >= self.n_folds]
+            if invalid_folds:
+                raise ValueError(f"Invalid fold indices: {invalid_folds}. Must be between 0 and {self.n_folds-1}")
+
+        self._log(f"\nStarting cross-validation on {len(folds_to_run)} of {self.n_folds} folds")
+        self._log(f"Running folds: {folds_to_run}")
+        
+        # Load existing fold histories if any
+        if not hasattr(self, 'fold_histories') or not self.fold_histories:
+            self.fold_histories = []
+        
+        # Ensure fold_histories has entries for all folds
+        if len(self.fold_histories) < self.n_folds:
+            # Initialize with empty entries for all folds
+            self.fold_histories = [None] * self.n_folds
+
+        for fold_idx in folds_to_run:
+            self.current_fold = fold_idx
+            fold_history = self.train_fold(fold_idx, data_module, num_epochs)
+            self.fold_histories[fold_idx] = fold_history
+            self._log(f"Completed fold {fold_idx + 1}/{self.n_folds}")
+
+        # Filter out any None entries from fold_histories (folds that weren't run)
+        self.fold_histories = [h for h in self.fold_histories if h is not None]
+        
+        # Save and visualize cross-validation results
+        self._save_cv_results()
+        
+        return self.fold_histories
 
     def train_epoch(self, train_loader: DataLoader) -> float:
         """Train model for one epoch.
@@ -232,7 +381,8 @@ class Trainer:
         val_loader: DataLoader,
         num_epochs: int,
         log_interval: int = 1,
-        start_epoch: int = 0
+        start_epoch: int = 0,
+        fold_dir: Optional[Path] = None
     ) -> Dict:
         """Execute complete training loop with validation and checkpointing.
         
@@ -242,6 +392,7 @@ class Trainer:
             num_epochs: Maximum number of training epochs
             log_interval: Number of epochs between logging updates
             start_epoch: Starting epoch (for resuming training)
+            fold_dir: Optional directory for fold-specific files
             
         Returns:
             Dictionary containing training history
@@ -249,7 +400,9 @@ class Trainer:
         best_val_loss = float('inf')
         start_time = datetime.now()
         
-        # If resuming training, find the best validation loss from history
+        # Use fold directory if provided, otherwise use run directory
+        save_dir = fold_dir if fold_dir is not None else self.run_dir
+        
         if start_epoch > 0 and self.history['val_loss']:
             best_val_loss = min(self.history['val_loss'])
             self._log(f"Resuming training from epoch {start_epoch}, best val_loss: {best_val_loss:.4f}")
@@ -259,12 +412,10 @@ class Trainer:
         for epoch in range(start_epoch, num_epochs):
             epoch_start = datetime.now()
             
-            # Training and validation
             train_loss = self.train_epoch(train_loader)
             val_metrics = self.evaluate(val_loader)
             val_loss = val_metrics['loss']
             
-            # Update history
             if epoch >= len(self.history['train_loss']):
                 self.history['train_loss'].append(train_loss)
                 self.history['val_loss'].append(val_loss)
@@ -272,12 +423,10 @@ class Trainer:
                     (datetime.now() - epoch_start).total_seconds()
                 )
             else:
-                # Overwrite existing history if resuming and redoing an epoch
                 self.history['train_loss'][epoch] = train_loss
                 self.history['val_loss'][epoch] = val_loss
                 self.history['epoch_times'][epoch] = (datetime.now() - epoch_start).total_seconds()
             
-            # Update metrics and save plots
             for metric_name, value in val_metrics.items():
                 if metric_name not in self.history['metrics']:
                     self.history['metrics'][metric_name] = []
@@ -285,13 +434,11 @@ class Trainer:
                 if epoch >= len(self.history['metrics'][metric_name]):
                     self.history['metrics'][metric_name].append(value)
                 else:
-                    # Overwrite existing metrics if resuming and redoing an epoch
                     self.history['metrics'][metric_name][epoch] = value
             
-            self._save_plots()
-            self._save_history()
+            self._save_plots(save_dir)
+            self._save_history(save_dir)
             
-            # Log progress
             if (epoch + 1) % log_interval == 0:
                 self._log(f"Epoch {epoch + 1}/{num_epochs}")
                 self._log(f"Train Loss: {train_loss:.4f}")
@@ -300,42 +447,36 @@ class Trainer:
                     if metric_name != 'loss':
                         self._log(f"Val {metric_name}: {value:.4f}")
             
-            # Create checkpoint data
             checkpoint = {
                 'epoch': epoch,
                 'model_state_dict': self.model.state_dict(),
                 'optimizer_state_dict': self.optimizer.state_dict(),
                 'val_loss': val_loss,
-                'history': self.history
+                'history': self.history,
+                'fold_idx': self.current_fold
             }
             if self.scheduler is not None:
                 checkpoint['scheduler_state_dict'] = self.scheduler.state_dict()
             
-            # Save latest checkpoint (overwriting previous one)
-            latest_checkpoint_path = self.run_dir / "checkpoints" / "latest_checkpoint.pt"
+            latest_checkpoint_path = save_dir / "checkpoints" / "latest_checkpoint.pt"
             latest_checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
             torch.save(checkpoint, latest_checkpoint_path)
             
-            # Save best model if improved
             if val_loss < best_val_loss:
                 best_val_loss = val_loss
                 self._log(f"New best model (val_loss: {val_loss:.4f})")
                 
-                # Save best model in the run root directory
-                best_model_path = self.run_dir / "best-model.pt"
+                best_model_path = save_dir / "best-model.pt"
                 torch.save(checkpoint, best_model_path)
                 self._log(f"Saved best model to {best_model_path}")
             
-            # Early stopping check
             if self.early_stopping(val_loss):
                 self._log("Early stopping triggered!")
                 break
             
-            # Learning rate scheduling
             if self.scheduler is not None:
                 self.scheduler.step(metrics=val_loss)
         
-        # Final logging
         training_time = datetime.now() - start_time
         self._log(f"Training completed in {training_time}")
         self._log(f"Best validation loss: {best_val_loss:.4f}")
