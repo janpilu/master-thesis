@@ -15,3 +15,4 @@ __pycache__
 data/4054689
 checkpoints/
 runs
+**/*.png
